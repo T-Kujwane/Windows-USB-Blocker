@@ -88,9 +88,9 @@ class LockScreen(QtWidgets.QtWidget):
         # self.submit_button.setAutoRepeat(False) # Disable auto repeat for the button
         # self.submit_button.setAutoDefault(False)
     
-    # Check the override code entered by the user
+# Create server logic to maintain a single instance of the application
+
     
-        
         
     
         

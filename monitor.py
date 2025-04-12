@@ -4,12 +4,33 @@ import time
 import argparse
 import threading
 import msvcrt  # Windows-specific for file locking
-from PyQt5 import QtWidgets, QtCore, QtGui
-import wmi  # Requires: pip install wmi
+from PyQt5 import QtWidgets, QtCore, QtGui # type: ignore
+import wmi  # type: ignore # Requires: pip install wmi
+import pythoncom # type: ignore # Requires: pip install pypiwin32
 
 # Global variable for the stop flag file (used to communicate stop command)
 stop_flag_file = "usb_blocker_stop.flag"
 
+def resource_path(relative_path):
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+def get_runtime_path():
+    
+    """
+    Determine the path to the current script.
+    This is used to find the stop flag file and other resources.
+    """
+    if getattr(sys, 'frozen', False):
+        # If the application is frozen (e.g., using PyInstaller)
+        return os.path.dirname(sys.executable)
+    else:
+        # If running in a normal Python environment
+        return os.path.dirname(os.path.abspath(__file__))
 
 # =============================================================================
 # Section: Instance Locking Helpers (Single-instance check)
@@ -48,20 +69,49 @@ def release_instance_lock(lock_file):
 # the main application starts.
 # =============================================================================
 class SplashScreen(QtWidgets.QWidget):
-    def __init__(self, countdown=10):
+    def __init__(self, countdown=30):
         super().__init__()
         self.countdown = countdown
+        self.total_time = countdown
         self.initUI()
 
     def initUI(self):
         # Frameless and always on top
         self.setWindowFlags(QtCore.Qt.FramelessWindowHint | QtCore.Qt.WindowStaysOnTopHint)
-        self.setGeometry(300, 300, 400, 200)
+
+        # Get screen dimensions and center the splash screen
+        screen = QtWidgets.QApplication.primaryScreen().geometry()
+        width, height = 800, 400  # Increased size for better visibility
+        self.setGeometry(
+            (screen.width() - width) // 2,
+            (screen.height() - height) // 2,
+            width,
+            height
+        )
+
+        # Logo on the left
+        self.logo = QtWidgets.QLabel(self)
+        logo_path = resource_path('tut_logo.png')  # Ensure the file exists in the working directory
+        if os.path.exists(logo_path):
+            pixmap = QtGui.QPixmap(logo_path)
+            self.logo.setPixmap(pixmap.scaled(200, 200, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+            self.logo.setGeometry(50, 100, 200, 200)  # Adjusted position and size for the larger splash
+        else:
+            print(f"Logo file '{logo_path}' not found. Please ensure it exists in the working directory.")
+
+        # Label for countdown text
         self.label = QtWidgets.QLabel(self)
         self.label.setAlignment(QtCore.Qt.AlignCenter)
-        self.label.setStyleSheet("font-size: 24px;")
-        self.label.setGeometry(0, 0, 400, 200)
-        self.label.setText(f"Starting in {self.countdown} seconds...")
+        self.label.setStyleSheet("font-size: 32px;")
+        self.label.setGeometry(280, 100, 450, 150)  # Adjusted to leave space for the larger logo
+        self.label.setText(f"USB Blocker \nStarting in {self.countdown} seconds...")
+
+        # Progress bar
+        self.progress_bar = QtWidgets.QProgressBar(self)
+        self.progress_bar.setGeometry(280, 280, 450, 30)  # Adjusted to align with the larger label
+        self.progress_bar.setMaximum(self.total_time)
+        self.progress_bar.setValue(self.total_time - self.countdown)
+
         # Timer to update the countdown every second
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.updateCountdown)
@@ -69,11 +119,12 @@ class SplashScreen(QtWidgets.QWidget):
 
     def updateCountdown(self):
         self.countdown -= 1
+        self.progress_bar.setValue(self.total_time - self.countdown)
         if self.countdown <= 0:
             self.timer.stop()
             self.close()  # Close splash when countdown ends
         else:
-            self.label.setText(f"Starting in {self.countdown} seconds...")
+            self.label.setText(f"USB Blocker \nStarting in {self.countdown} seconds...")
 
 
 # =============================================================================
@@ -192,6 +243,8 @@ class USBMonitor(threading.Thread):
 
     def run(self):
         # Set up a WMI watcher for device creation events (e.g., USB insertion)
+        pythoncom.CoInitialize()  # Initialize COM for the thread
+        # Use WMI to monitor USB device changes
         c = wmi.WMI()
         watcher = c.Win32_DeviceChangeEvent.watch_for("Creation")
         while self.running:
@@ -206,6 +259,9 @@ class USBMonitor(threading.Thread):
 
     def stop(self):
         self.running = False
+        # Clean up WMI resources
+        pythoncom.CoUninitialize()
+        self.join()
 
 
 # =============================================================================
@@ -243,21 +299,33 @@ class USBBlockerApp(QtWidgets.QApplication):
         self.splash.show()
         # After splash, start the main app functionalities
         QtCore.QTimer.singleShot(10000, self.start_app)
+        self.exec_()  # Start the event loop to keep the application running
 
     def start_app(self):
         self.splash.close()
-        # Create and show the system tray icon (ensure you have a valid icon file)
-        icon = QtGui.QIcon("icon.png")  # Replace with a valid icon file path
-        self.tray_icon = SystemTrayIcon(icon, stop_callback=self.stop_app)
-        self.tray_icon.show()
+        # Check if the icon file exists and display a message on the console
+        icon_path = resource_path('usb_blocker_icon.png')
+        if not os.path.exists(icon_path):
+            print(f"Icon file '{icon_path}' not found. Please ensure it exists in the working directory.")
+        else:
+            print(f"Icon file '{icon_path}' found.")
+            # Create and show the system tray icon
+            icon = QtGui.QIcon(icon_path)
+            self.tray_icon = SystemTrayIcon(icon, stop_callback=self.stop_app)
+            self.tray_icon.show()
 
         # Start the USB monitor thread to listen for USB insertion events
         self.usb_monitor = USBMonitor(lock_screen_callback=self.show_lock_screen)
         self.usb_monitor.start()
 
         # If a run time is specified, schedule the app to stop after that duration
+        print(f"Application will run for {self.run_time} seconds." if self.run_time else "No runtime specified.")
+
+        # Schedule the app to stop after the specified run time
         if self.run_time:
             QtCore.QTimer.singleShot(self.run_time * 1000, self.stop_app)
+        else:
+            print("No runtime specified. Running indefinitely...")
 
         # Periodically check for the stop flag file (set via command line or tray)
         self.check_stop_flag()
@@ -304,7 +372,15 @@ def main():
     parser.add_argument("--run_time", type=int, help="Time in seconds to run before auto-stop")
     parser.add_argument("--name", default="Process 101", help="Custom name for the app (as seen in Task Manager)")
     args = parser.parse_args()
-
+    
+    # Alert the user about the action being taken using pyQt5 message box
+    alert = QtWidgets.QMessageBox()
+    alert.setText(f"Action: {args.action}\nOverride Code: {args.override}\nCustom Name: {args.name}")
+    alert.setWindowTitle("USB Blocker")
+    alert.setIcon(QtWidgets.QMessageBox.Information)
+    alert.setStandardButtons(QtWidgets.QMessageBox.Ok)
+    alert.exec_()
+    
     if args.action == "start":
         # Try to acquire a single-instance lock
         lock_file = acquire_instance_lock()
@@ -316,6 +392,7 @@ def main():
         # Start the Qt application and store the instance lock
         app = USBBlockerApp(sys.argv, override_code=args.override, custom_name=args.name, run_time=args.run_time)
         app.instance_lock = lock_file
+        
         sys.exit(app.exec_())
 
     elif args.action == "stop":
