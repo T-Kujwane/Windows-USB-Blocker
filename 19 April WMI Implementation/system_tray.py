@@ -2,14 +2,18 @@ from pystray import Icon, Menu, MenuItem
 from PIL import Image
 import sys
 
-class SystemTrayApp:
-    def __init__(self, icon_name, image_path):
+class SystemTrayInterface:
+    def __init__(self, icon_name = "System Tray Icon", image_path = "sys_tray_icon.png", process = None):
         self.icon_name = icon_name
         self.image_path = image_path
         self.icon = None
+        self.process = process
 
-    def quit_application(self, icon, item):
+    def quit_application(self):
         self.icon.stop()
+        if self.process:
+            self.process.terminate()
+            print(f"Process with PID {self.process.pid} terminated.")
 
     def create_image(self):
         # Load the image from the file
@@ -18,6 +22,9 @@ class SystemTrayApp:
         except FileNotFoundError:
             print(f"Error: '{self.image_path}' not found.")
             sys.exit(1)
+            
+    def set_process(self, process):
+        self.process = process
 
     def run(self):
         # Define the menu
@@ -33,5 +40,5 @@ class SystemTrayApp:
 
 # Example usage
 if __name__ == "__main__":
-    app = SystemTrayApp("System Tray Icon", "sys_tray_icon.png")
+    app = SystemTrayInterface()
     app.run()
